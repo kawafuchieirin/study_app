@@ -1,0 +1,48 @@
+repos:
+  # 1) 低リスクの基本チェック（外部依存なし）
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  # 2) Python（フォーマッタ/リンタ） — backend実装後に有効化
+  # - repo: https://github.com/psf/black
+  #   rev: 24.3.0
+  #   hooks:
+  #     - id: black
+  #       files: ^backend/
+  # - repo: https://github.com/astral-sh/ruff-pre-commit
+  #   rev: v0.3.0
+  #   hooks:
+  #     - id: ruff
+  #       args: ["--fix"]
+  #       files: ^backend/
+
+  # 3) Terraform — fmt/validate を自動実行
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.92.0
+    hooks:
+      - id: terraform_fmt
+        files: ^infra/
+      - id: terraform_validate
+        files: ^infra/
+
+  # 4) JavaScript/TypeScript — ESLint/Prettier を npm script 経由で
+  - repo: local
+    hooks:
+      - id: frontend-prettier
+        name: frontend-prettier
+        entry: bash -c 'cd front && npm run format'
+        language: system
+        files: ^front/.*\.(ts|tsx|js|jsx|json|css|html)$
+        pass_filenames: false
+      - id: frontend-lint
+        name: frontend-lint
+        entry: bash -c 'cd front && npm run lint'
+        language: system
+        files: ^front/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: false
