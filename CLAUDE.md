@@ -175,10 +175,77 @@ Authorization: Bearer <JWT>
 > 機密は SSM Parameter Store / Secrets Manager。CORS はフロントのドメインに限定。
 
 ### インフラ構成方針
-- **環境分離**: dev と prod は完全に独立したディレクトリとして管理（`infra/dev/`, `infra/prod/`）
-- **モジュール化**: 共通ロジックは `infra/modules/` で再利用
-- **State管理**: 環境ごとに独立した remote state（S3 + DynamoDB）
-- **デプロイ**: 各環境ディレクトリで独立して `terraform apply` を実行
+
+**コンポーネントベースの管理**: 各コンポーネント（front, backend等）が独自のインフラディレクトリを持つ
+
+- **環境分離**: dev と prod は完全に独立したディレクトリとして管理
+- **モジュール化**: 共通ロジックは各コンポーネントの `infra/modules/` で再利用
+- **State管理**: コンポーネント×環境ごとに独立した remote state（S3、バージョニング有効化推奨）
+- **デプロイ**: 各コンポーネントのインフラを独立してデプロイ可能
+
+**ディレクトリ構成**:
+```
+front/
+└── infra/
+    ├── _shared/      # 共通のTerraformコード（main.tf, variables.tf, outputs.tf）
+    ├── dev/          # Dev環境（backend.tf, terraform.tfvars + シンボリックリンク）
+    ├── prod/         # Prod環境（backend.tf, terraform.tfvars + シンボリックリンク）
+    └── modules/      # フロントエンド用の共通モジュール
+
+backend/
+└── infra/
+    ├── _shared/      # 共通のTerraformコード（main.tf, variables.tf, outputs.tf）
+    ├── dev/          # Dev環境（backend.tf, terraform.tfvars + シンボリックリンク）
+    ├── prod/         # Prod環境（backend.tf, terraform.tfvars + シンボリックリンク）
+    └── modules/      # バックエンド用の共通モジュール
+```
+
+**重要ルール**:
+- ⚠️ **各コンポーネントのインフラは `{component}/infra/` 配下に配置**
+- Terraformコードは `{component}/infra/dev/` または `{component}/infra/prod/` に配置
+- 共通化するコードは `{component}/infra/modules/` 配下にモジュールとして配置
+- ルート直下に `infra/` ディレクトリは作成しない
+- このルールは実装時に必ず遵守すること
+
+**環境間の差分最小化ルール**:
+- ⚠️ **共通コードは `_shared/` ディレクトリに配置し、環境からシンボリックリンクで参照**
+- 環境固有の値は必ず変数化（`variables.tf` + `terraform.tfvars`）
+
+**ファイル配置ルール**:
+- `_shared/` に配置: `main.tf`, `variables.tf`, `outputs.tf`（完全に共通）
+- `dev/`, `prod/` に配置: `backend.tf`, `terraform.tfvars`（環境固有）
+- `dev/`, `prod/` からシンボリックリンク: `main.tf`, `variables.tf`, `outputs.tf` → `../_shared/`
+
+**実装例**:
+```bash
+# 共通ファイルの配置
+front/infra/_shared/
+  ├── main.tf        # 変数を使用した共通コード
+  ├── variables.tf   # 変数定義
+  └── outputs.tf     # 出力定義
+
+# Dev環境
+front/infra/dev/
+  ├── backend.tf           # Dev用 remote state設定
+  ├── terraform.tfvars     # environment = "dev"
+  ├── main.tf -> ../_shared/main.tf       # シンボリックリンク
+  ├── variables.tf -> ../_shared/variables.tf
+  └── outputs.tf -> ../_shared/outputs.tf
+
+# Prod環境
+front/infra/prod/
+  ├── backend.tf           # Prod用 remote state設定
+  ├── terraform.tfvars     # environment = "prod"
+  ├── main.tf -> ../_shared/main.tf       # シンボリックリンク
+  ├── variables.tf -> ../_shared/variables.tf
+  └── outputs.tf -> ../_shared/outputs.tf
+```
+
+**メリット**:
+- コード重複が完全に排除される
+- 共通ロジックの変更は `_shared/` のみで完結
+- 環境ごとの差分が `backend.tf` と `terraform.tfvars` だけで明確
+- 人為的ミス（コピー&ペーストの修正漏れ）を防止
 
 ### AWS リソース命名規則
 
@@ -187,9 +254,9 @@ Authorization: Bearer <JWT>
 | リソース | 命名例（dev） | 命名例（prod） |
 |---------|-------------|---------------|
 | S3バケット（フロント） | `study-app-front-dev` | `study-app-front-prod` |
-| S3バケット（Terraform State） | `study-app-tfstate-dev` | `study-app-tfstate-prod` |
+| S3バケット（Terraform State - フロント） | `study-app-front-tfstate-dev` | `study-app-front-tfstate-prod` |
+| S3バケット（Terraform State - バックエンド） | `study-app-backend-tfstate-dev` | `study-app-backend-tfstate-prod` |
 | DynamoDBテーブル（learning_logs） | `study-app-learning-logs-dev` | `study-app-learning-logs-prod` |
-| DynamoDBテーブル（Terraform Lock） | `study-app-tfstate-lock-dev` | `study-app-tfstate-lock-prod` |
 | Cognito User Pool | `study-app-user-pool-dev` | `study-app-user-pool-prod` |
 | Cognito User Pool Client | `study-app-client-dev` | `study-app-client-prod` |
 | Cognito Domain | `study-app-auth-dev` | `study-app-auth-prod` |
@@ -204,6 +271,11 @@ Authorization: Bearer <JWT>
 - DynamoDBテーブル名はアンダースコアも使用可能
 - タグは必ず付与: `Environment` (dev/prod), `Project` (study-app), `ManagedBy` (terraform)
 
+**Terraform State管理**:
+- S3バケットでremote stateを管理（DynamoDB Lockは使用しない）
+- S3バケットのバージョニングを有効化することで、誤った変更からの復旧が可能
+- 並行実行の可能性がある場合は注意（CI/CDパイプラインでの排他制御を推奨）
+
 ---
 
 ## コーディング規約 / 返答規約（AI向け）
@@ -212,6 +284,14 @@ Authorization: Bearer <JWT>
 - 型を優先（FastAPI/Pydantic, React/TypeScript）。
 - 小さな PR を短いサイクルで。大規模変更は設計メモを添付。
 - 例外/エラー発生時は再現手順・ログ・期待/実際をセットで記載。
+
+### インフラ実装の必須ルール
+- **各コンポーネントのインフラは `{component}/infra/` 配下に配置**
+  - 例: `front/infra/`, `backend/infra/`
+- **環境ごとのコードは `{component}/infra/dev/` または `{component}/infra/prod/` に配置**
+- **共通モジュールは `{component}/infra/modules/` に配置**
+- **ルート直下に `infra/` ディレクトリは作成しない**
+- このルールに違反する実装は行わない
 
 ### commit メッセージ（テンプレ）
 ```
@@ -356,6 +436,11 @@ repos:
 ---
 
 ## 変更履歴
+- v0.8 Terraform State管理をS3のみに変更（DynamoDB Lockテーブル削除）。バージョニング有効化を推奨。
+- v0.7 環境間の差分を完全に排除：_shared/ディレクトリ + シンボリックリンク構造を導入。環境固有ファイルはbackend.tfとterraform.tfvarsのみ。
+- v0.6 環境間の差分最小化ルールを追加。変数を活用してdev/prod間のコード重複を排除。
+- v0.5 インフラ構成方針を変更：コンポーネントベース管理（各コンポーネントが独自のinfraディレクトリを持つ）。
+- v0.4 インフラ実装の必須ルールを追加（infra/直下にTerraformファイルを作成しない）。Frontend実装完了。デプロイスクリプト追加。
 - v0.3 AWSリソース命名規則を追加。インフラ構成方針を明記（環境ごとにディレクトリ分離）。
 - v0.2 stg環境を削除、dev/prod環境のみに変更。infraディレクトリを環境ごとに分離。
 - v0.1 初版（MVP 設計・手順・規約を定義）
